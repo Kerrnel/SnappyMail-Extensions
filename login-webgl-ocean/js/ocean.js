@@ -257,6 +257,53 @@
 			}
 		}
 
+		// Occasional pair of gliding/flapping sea gulls during clear daytime
+		vec3 evalGulls(vec3 rd, float time, float nightFactor, float stormFactor, vec3 skyCol) {
+			float clearDay = (1.0 - nightFactor) * (1.0 - stormFactor);
+			if (clearDay < 0.1 || rd.y < 0.02 || rd.y > 0.45 || rd.z < 0.1) return skyCol;
+
+			float period = 11.0;
+			float slot = floor(time / period);
+			float localT = fract(time / period);
+			vec3 rnd = hash32(vec2(slot, 37.3));
+
+			// Fly by in ~65% of daytime slots
+			if (rnd.z < 0.35) return skyCol;
+
+			vec2 skyP = vec2(rd.x / rd.z, rd.y);
+			float dirSign = (rnd.x > 0.5) ? 1.0 : -1.0;
+			float centerX = mix(-0.75, 0.75, localT) * dirSign;
+			float centerY = 0.14 + rnd.y * 0.16 + sin(localT * 6.28) * 0.02;
+
+			// Render a pair of gulls (leader + trailing wingman)
+			for (int i = 0; i < 2; i++) {
+				float fi = float(i);
+				vec2 gullPos = vec2(centerX - fi * 0.055 * dirSign, centerY + (fi * 0.028 - 0.01));
+				vec2 p = (skyP - gullPos) * (42.0 + fi * 12.0); // Scale of gull
+
+				// Slight banking tilt
+				float bank = 0.15 * sin(time * 1.7 + fi) * dirSign;
+				p = mat2(cos(bank), -sin(bank), sin(bank), cos(bank)) * p;
+
+				if (abs(p.x) < 1.0 && abs(p.y) < 0.6) {
+					float ax = abs(p.x);
+					// Slow flap alternating with flat coastal glide
+					float glideMask = smoothstep(-0.2, 0.6, sin(time * 0.9 + fi * 1.5));
+					float flap = sin(time * 6.8 - fi * 2.1) * (1.0 - glideMask * 0.82);
+
+					// Classic M-shaped gull wing camber: rises from body, bends at wrist, dips at tip
+					float wingY = ax * 0.38 * flap + sin(ax * 3.14159) * 0.16 - pow(ax, 2.2) * 0.22;
+					float thickness = 0.055 * (1.0 - ax * 0.65) + 0.025 * exp(-ax * 8.0);
+
+					float bird = smoothstep(thickness, thickness * 0.2, abs(p.y - wingY)) * smoothstep(1.0, 0.85, ax);
+					// Dark silhouette with slight atmospheric fade
+					vec3 gullCol = mix(vec3(0.12, 0.16, 0.22), skyCol, 0.35);
+					skyCol = mix(skyCol, gullCol, bird * clearDay);
+				}
+			}
+			return skyCol;
+		}
+
 		void getTimePalette(
 			float hour,
 			out vec3 skyHorizon,
@@ -268,7 +315,7 @@
 			out float nightFactor,
 			out float stormFactor
 		) {
-			float angle = (hour - 12.5) * 0.261799;
+			float angle = (hour - 12.0) * 0.261799;
 			sunElev = cos(angle);
 
 			float dayFactor = smoothstep(-0.08, 0.28, sunElev);
@@ -446,6 +493,12 @@
 
 			// Add the lightning bolt on top of the cloud deck so clouds don't hide the trunk
 			sky += boltCol;
+
+
+			if (!isReflection) {
+				sky = evalGulls(rd, u_time, nightFactor, stormFactor, sky);
+			}
+
 			return sky;
 		}
 
@@ -465,8 +518,21 @@
 			float cy = cos(yaw), sy = sin(yaw);
 			rd.xz = mat2(cy, -sy, sy, cy) * rd.xz;
 
-			float bodyY = mix(0.16, 0.42, clamp(abs(sunElev), 0.0, 1.0));
-			float bodyX = 0.35 + (u_mouse.x - 0.5) * 0.25;
+			// Sun tracks 05:00 (sunrise left) -> 12:00 (zenith center) -> 19:00 (sunset right)
+			// Moon tracks 19:00 (moonrise left) -> 00:00 (zenith) -> 05:00 (moonset right)
+			float isDayArc = step(5.0, u_hour) * step(u_hour, 19.0);
+			float dayProgress = clamp((u_hour - 5.0) / 14.0, 0.0, 1.0); // 0.0 at 5am, 0.5 at 12pm, 1.0 at 7pm
+
+			float nightHour = (u_hour < 5.0) ? (u_hour + 24.0) : u_hour;
+			float nightProgress = clamp((nightHour - 19.0) / 10.0, 0.0, 1.0); // 0.0 at 7pm, 0.5 at 12am, 1.0 at 5am
+
+			float arcProg = mix(nightProgress, dayProgress, isDayArc);
+			float arcElev = sin(arcProg * 3.14159265); // 0.0 at horizon (5am/7pm), 1.0 at noon/midnight
+
+			// X sweeps from left (-0.65) to center (0.0) at noon, to right (+0.65) at 19:00
+			float bodyX = mix(-0.65, 0.65, arcProg) + (u_mouse.x - 0.5) * 0.18;
+			// Y climbs from horizon (0.03) at 5:00/19:00 up to high sky (0.52) at 12:00
+			float bodyY = mix(0.03, 0.52, pow(arcElev, 0.85));
 			vec3 bodyDir = normalize(vec3(bodyX, bodyY, 0.88));
 
 			vec3 skyCol = renderSky(rd, bodyDir, skyHorizon, skyZenith, sunColor, nightFactor, stormFactor, false);

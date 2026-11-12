@@ -8,4 +8,4 @@
 
 **Video** (Default video is an underwater scene).
 
-<img width="605" height="502" alt="image" src="https://github.com/user-attachments/assets/f4d6b8be-dd95-4388-ac8d-2e7a88f11c66" />
+<img width="249" height="514" alt="image" src="https://github.com/user-attachments/assets/1f5b97fe-4f20-49ab-b0e0-5058ae520f10" />

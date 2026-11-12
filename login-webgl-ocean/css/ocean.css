@@ -1,0 +1,51 @@
+#snappy-ocean-canvas {
+	position: fixed;
+	top: 0;
+	left: 0;
+	width: 100vw;
+	height: 100vh;
+	z-index: 0;
+	pointer-events: none;
+}
+
+#snappy-ocean-overlay {
+	position: fixed;
+	bottom: 14%;
+	right: 12%;
+	z-index: 0;
+	pointer-events: none;
+	animation: oceanBob 6.5s ease-in-out infinite;
+	filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.45));
+	transition: transform 0.25s ease-out;
+}
+
+@keyframes oceanBob {
+	0%, 100% {
+		transform: translateY(0px) rotate(-1.2deg);
+	}
+	50% {
+		transform: translateY(-14px) rotate(1.4deg);
+	}
+}
+
+body:has(#snappy-ocean-canvas) {
+	background-color: #050d18 !important;
+}
+
+body:has(#snappy-ocean-canvas) #rl-bg,
+body:has(#snappy-ocean-canvas) #rl-app,
+body:has(#snappy-ocean-canvas) #rl-content {
+	background-image: none !important;
+	background-color: transparent !important;
+}
+
+body:has(#snappy-ocean-canvas) #rl-app > * {
+	position: relative;
+	z-index: 1;
+}
+
+/* Keep login header text crisp against bright sky/sunset gradients */
+body:has(#snappy-ocean-canvas) .LoginView .header,
+body:has(#snappy-ocean-canvas) #rl-logins h1 {
+	text-shadow: 0 2px 12px rgba(0, 0, 0, 0.65);
+}

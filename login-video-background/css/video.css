@@ -1,0 +1,30 @@
+#snappy-bg-video {
+	position: fixed;
+	top: 50%;
+	left: 50%;
+	min-width: 100%;
+	min-height: 100%;
+	width: auto;
+	height: auto;
+	transform: translate(-50%, -50%);
+	object-fit: cover;
+	z-index: 0;
+	pointer-events: none;
+}
+
+/* Only make containers transparent when the video is actually present */
+body:has(#snappy-bg-video) {
+	background-color: #111 !important;
+}
+
+body:has(#snappy-bg-video) #rl-bg,
+body:has(#snappy-bg-video) #rl-app,
+body:has(#snappy-bg-video) #rl-content {
+	background-image: none !important;
+	background-color: transparent !important;
+}
+
+body:has(#snappy-bg-video) #rl-app > * {
+	position: relative;
+	z-index: 1;
+}

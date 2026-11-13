@@ -15,6 +15,7 @@
 		uniform vec2 u_mouse;
 		uniform float u_hour; // 0.0 to 24.0
 		uniform float u_dark; // 0.0 = light theme, 1.0 = dark theme
+		uniform float u_moonPhase; // 0.0 = New, 0.5 = Full
 
 		float hash(vec2 p) {
 			vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -75,16 +76,21 @@
 			float h = 0.0;
 			float amp = 0.36;
 			float freq = 0.55;
-			mat2 rot = mat2(0.8, -0.6, 0.6, 0.8);
+			// ~62-degree rotation matrix so primary swell and cross-current intermix
+			mat2 rot = mat2(0.47, -0.88, 0.88, 0.47);
 			vec2 dir = vec2(0.85, 0.52);
 
 			for (int i = 0; i < 5; i++) {
-				float w = wave(p, dir, freq, 1.4 + float(i) * 0.28, t);
-				h += amp * pow(0.5 + 0.5 * w, 2.1);
-				p = rot * p;
-				dir = normalize(rot * dir);
-				freq *= 1.78;
-				amp *= 0.47;
+				// Alternate wave propagation direction across octaves for realistic cross-sea
+				float dirSign = (i == 1 || i == 3) ? -0.85 : 1.0;
+				float phase = dot(p, dir) * freq + t * (1.35 + float(i) * 0.28) * dirSign;
+				float w = sin(phase);
+				h += amp * pow(0.5 + 0.5 * w, 2.0);
+				// Trochoidal (Gerstner-like) horizontal pinch toward wave crests
+				p -= dir * cos(phase) * amp * 0.28;
+				dir = rot * dir;
+				freq *= 1.76;
+				amp *= 0.48;
 			}
 			return h;
 		}
@@ -93,17 +99,22 @@
 			float h = 0.0;
 			float amp = 0.36;
 			float freq = 0.55;
-			mat2 rot = mat2(0.8, -0.6, 0.6, 0.8);
+			mat2 rot = mat2(0.47, -0.88, 0.88, 0.47);
 			vec2 dir = vec2(0.85, 0.52);
 
 			for (int i = 0; i < 8; i++) {
-				float w = wave(p, dir, freq, 1.4 + float(i) * 0.32, t);
-				float sharp = (i < 4) ? 2.2 : 1.5;
+				float dirSign = (i == 1 || i == 3 || i == 6) ? -0.85 : 1.0;
+				float phase = dot(p, dir) * freq + t * (1.35 + float(i) * 0.32) * dirSign;
+				float w = sin(phase);
+				float sharp = (i < 4) ? 2.1 : 1.5;
 				h += amp * pow(0.5 + 0.5 * w, sharp);
-				p = rot * p;
-				dir = normalize(rot * dir);
-				freq *= 1.82;
-				amp *= 0.46;
+
+				// Limit swell pinching
+				if (i < 4) p -= dir * cos(phase) * amp * 0.12;
+
+				dir = rot * dir;
+				freq *= 1.80;
+				amp *= 0.47;
 			}
 			return h;
 		}
@@ -178,24 +189,28 @@
 		}
 
 		float rainStreaks(vec2 uv, float time) {
-			mat2 tilt = mat2(0.97, -0.24, 0.24, 0.97);
+			// Stronger ~26-degree wind slant + curving wind gusts
+			float gust = 0.08 * sin(time * 1.4) + 0.05 * sin(time * 2.7 + uv.x * 2.5);
+			mat2 tilt = mat2(0.90, -0.44 - gust, 0.44 + gust, 0.90);
 			vec2 p = tilt * uv;
+			// Curve the rain trajectory slightly as it falls
+			p.x += sin(uv.y * 3.2 + time * 2.2) * 0.035;
 			float r = 0.0;
 
 			for (int i = 0; i < 2; i++) {
 				float fi = float(i);
-				vec2 scale = vec2(42.0 + fi * 26.0, 2.6 + fi * 1.1);
-				vec2 st = p * scale + vec2(fi * 17.3, time * (7.5 + fi * 3.5));
+				vec2 scale = vec2(38.0 + fi * 24.0, 2.2 + fi * 0.9);
+				vec2 st = p * scale + vec2(time * (1.8 + fi * 0.8), time * (9.0 + fi * 4.0));
 				vec2 id = floor(st);
 				vec2 f = fract(st);
-
 				vec3 rnd = hash32(id);
-				if (rnd.z > 0.72) {
+				f.y += rnd.y * 5.0;
+				if (rnd.z > 0.70) {
 					float xOff = 0.2 + rnd.x * 0.6;
 					float drop = smoothstep(0.09, 0.0, abs(f.x - xOff)) *
-					             smoothstep(0.0, 0.25, f.y) *
-					             smoothstep(1.0, 0.35, f.y);
-					r += drop * (0.55 - fi * 0.2);
+					             smoothstep(0.0, 0.22, f.y) *
+					             smoothstep(1.0, 0.30, f.y);
+					r += drop * (0.60 - fi * 0.22);
 				}
 			}
 			return r;
@@ -322,7 +337,14 @@
 			float goldenFactor = smoothstep(-0.22, 0.04, sunElev) * (1.0 - smoothstep(0.04, 0.34, sunElev));
 			nightFactor = 1.0 - smoothstep(-0.25, 0.02, sunElev);
 
-			stormFactor = u_dark * (1.0 - nightFactor);
+			// 10% chance of a passing night squall per 10-minute wall-clock window, lasting 1-10 mins
+			float clockSlot = floor(hour * 6.0) + floor(u_moonPhase * 1000.0);
+			vec3 sqRnd = hash32(vec2(clockSlot, 53.9));
+			float sqDur = mix(60.0, 600.0, sqRnd.y); // 1 to 10 minutes in seconds
+			float sqWindow = mod(u_time, 600.0);
+			float nightSquall = step(sqRnd.x, 0.10) * smoothstep(0.0, 20.0, sqWindow) * smoothstep(sqDur, sqDur - 20.0, sqWindow);
+
+			stormFactor = max(u_dark * (1.0 - nightFactor), nightFactor * nightSquall * 0.55);
 
 			// Morning (06:00-12:00) vs Afternoon (12:00-18:00) asymmetry:
 			// 1.0 in morning (crisper, bluer), 0.0 in afternoon (warmer, slightly deeper)
@@ -395,8 +417,58 @@
 			vec3 sky = mix(skyHorizon, skyZenith, pow(max(rd.y, 0.0), 0.52));
 
 			float discVis = 1.0 - 0.85 * stormFactor;
-			sky += sunColor * pow(sunAmt, mix(10.0, 4.0, stormFactor)) * (0.28 + 0.15 * (1.0 - nightFactor));
-			sky += sunColor * smoothstep(0.9982, 0.9994, sunAmt) * 2.4 * discVis;
+			float dayVis = 1.0 - nightFactor;
+
+			// Phase illumination factor: 0.0 at New Moon (0.0), 1.0 at Full Moon (0.5)
+			float phaseAngle = u_moonPhase * 6.2831853;
+			float moonIllum = 0.5 * (1.0 - cos(phaseAngle));
+
+			// Atmospheric glow (scales with moon phase at night) -  Tighten the glow cone on water reflections so it doesn't paint wide pillowy bands
+			float glowExp = isReflection ? 65.0 : mix(10.0, 4.0, stormFactor);
+			float glowStrength = mix(0.28 + 0.15 * dayVis, (0.06 + 0.26 * moonIllum), nightFactor) * (isReflection ? 0.35 : 1.0);
+			sky += sunColor * pow(sunAmt, glowExp) * glowStrength;
+
+			// Daytime sharp solar disc
+			if (dayVis > 0.01) {
+				sky += sunColor * smoothstep(0.9982, 0.9994, sunAmt) * 2.4 * discVis * dayVis;
+			}
+
+			// Nighttime 3D Phased Moon with Lunar Maria & Earthshine
+			if (nightFactor > 0.01 && sunAmt > 0.9975) {
+				// Construct local tangent basis around bodyDir
+				vec3 upRef = vec3(0.0, 1.0, 0.0);
+				vec3 mRight = normalize(cross(upRef, bodyDir));
+				vec3 mUp = cross(bodyDir, mRight);
+
+				// Project ray onto moon disc (-1.0 to 1.0 radius)
+				float moonRadius = 0.046; // ~cos(0.9989)
+				vec2 mUV = vec2(dot(rd, mRight), dot(rd, mUp)) / moonRadius;
+				float r2 = dot(mUV, mUV);
+
+				if (r2 < 1.0) {
+					// 3D sphere normal on the lunar surface
+					vec3 mNorm = vec3(mUV.x, mUV.y, sqrt(max(0.0, 1.0 - r2)));
+					// Slightly tilt the lunar terminator for natural sky orientation
+					vec2 rotUV = mat2(0.94, -0.34, 0.34, 0.94) * mNorm.xy;
+					vec3 nRot = vec3(rotUV, mNorm.z);
+
+					// Sun direction relative to moon based on synodic phase (0..2*PI)
+					vec3 lightDir = vec3(sin(phaseAngle), 0.0, -cos(phaseAngle));
+					float ndotl = dot(nRot, lightDir);
+
+					// Soft terminator transition + faint earthshine on the unlit crescent
+					float lit = smoothstep(-0.06, 0.08, ndotl);
+					float earthshine = 0.035 * (1.0 - lit) * mNorm.z;
+
+					// Subtle darker lunar maria (seas) using FBM
+					float maria = fbm(mUV * 2.6 + vec2(1.4, 3.2));
+					float surfaceTex = 1.0 - 0.28 * smoothstep(0.45, 0.72, maria);
+
+					float edgeAntiAlias = smoothstep(1.0, 0.92, r2);
+					vec3 moonSurf = sunColor * surfaceTex * (lit * 2.3 + earthshine);
+					sky = mix(sky, moonSurf, edgeAntiAlias * nightFactor);
+				}
+			}
 
 			if (nightFactor > 0.05 && rd.y > 0.005) {
 				float az = atan(rd.x, rd.z);
@@ -410,7 +482,7 @@
 				float mwBand = exp(-pow((mwCoord.y - 0.32) * 3.8, 2.0));
 				float mwCloud = fbm(mwCoord * 6.5 + vec2(4.2, 1.7)) * mwBand;
 
-				float moonMask = 1.0 - smoothstep(0.92, 0.996, sunAmt);
+				float moonMask = 1.0 - smoothstep(0.92, 0.9985, sunAmt) * moonIllum;
 				float horizonFade = smoothstep(0.01, 0.16, rd.y);
 
 				float sharpBoost = isReflection ? 18.0 : 34.0;
@@ -555,8 +627,20 @@
 				pos = ro + rd * dist;
 			}
 
-			float eps = max(0.007, dist * 0.0011);
+			// Smooth highlights
+			float eps = max(0.018, dist * 0.0014);
 			vec3 n = getNormal(pos.xz, u_time, eps);
+
+			// High-frequency FBM facet diffusion mask: breaks pillowy swell reflections into crisp water sparkles
+			vec2 mp = pos.xz * 16.0;
+			float f1 = fbm(mp + vec2(u_time * 1.4, -u_time * 0.9));
+			float f2 = fbm(mp * 1.7 - vec2(u_time * 1.1, u_time * 1.3));
+			vec2 facet = (vec2(f1, f2) - 0.5) * 0.22 * smoothstep(110.0, 3.0, dist);
+			n = normalize(n + vec3(facet.x, 0.0, facet.y));
+
+			// Break up plastic specular sheen with fine capillary wind ripples
+			vec2 capGrad = vec2(noise(pos.xz * 6.5 + u_time * 1.2), noise(pos.xz * 6.5 - u_time * 1.1)) - 0.5;
+			n = normalize(n + vec3(capGrad.x, 0.0, capGrad.y) * 0.045 * smoothstep(90.0, 5.0, dist));
 
 			if (stormFactor > 0.01 && dist < 35.0) {
 				vec2 dropUV = pos.xz * 7.5;
@@ -587,8 +671,9 @@
 			foamTint *= mix(1.0, 0.32, max(nightFactor, stormFactor * 0.75));
 
 			vec3 halfVec = normalize(bodyDir - rd);
-			float spec = pow(max(dot(n, halfVec), 0.0), 280.0);
-			vec3 glitter = sunColor * spec * (nightFactor > 0.5 ? 1.6 : mix(2.6, 0.45, stormFactor));
+			float sparkleMask = smoothstep(0.38, 0.65, f1 * f2 * 2.2);
+			float spec = pow(max(dot(n, halfVec), 0.0), 340.0) * (0.35 + 1.4 * sparkleMask);
+			vec3 glitter = sunColor * spec * (nightFactor > 0.5 ? 2.2 : mix(2.8, 0.45, stormFactor));
 
 			vec3 col = mix(waterCol, reflCol, fresnel);
 			col = mix(col, foamTint, clamp(whitecap * 0.82, 0.0, 1.0)) + glitter;
@@ -671,6 +756,19 @@
 		const mouseLoc = gl.getUniformLocation(prog, 'u_mouse');
 		const hourLoc = gl.getUniformLocation(prog, 'u_hour');
 		const darkLoc = gl.getUniformLocation(prog, 'u_dark');
+		const moonPhaseLoc = gl.getUniformLocation(prog, 'u_moonPhase');
+		const forceMoonStr = rl.pluginSettingsGet('login-webgl-ocean', 'ForceMoonPhase');
+
+		// Computes real astronomical lunar phase (0.0 = New, 0.25 = First Quarter, 0.5 = Full, 0.75 = Last Quarter)
+		const getMoonPhase = () => {
+			if (forceMoonStr !== '' && forceMoonStr !== null && !isNaN(parseFloat(forceMoonStr))) {
+				return parseFloat(forceMoonStr);
+			}
+			const synodicMonth = 29.53058867;
+			// Known reference New Moon: Jan 6, 2000 18:14 UTC (947182440000 ms)
+			const daysSinceRef = (Date.now() - 947182440000) / 86400000;
+			return ((daysSinceRef % synodicMonth) + synodicMonth) % synodicMonth / synodicMonth;
+		};
 
 		const darkMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 		const isDarkTheme = () => {
@@ -725,6 +823,7 @@
 			gl.uniform2f(mouseLoc, curX, curY);
 			gl.uniform1f(hourLoc, getCurrentHour());
 			gl.uniform1f(darkLoc, curDark);
+			gl.uniform1f(moonPhaseLoc, getMoonPhase());
 			gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
 			animId = requestAnimationFrame(render);

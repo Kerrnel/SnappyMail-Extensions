@@ -17,6 +17,13 @@
 		uniform float u_dark; // 0.0 = light theme, 1.0 = dark theme
 		uniform float u_moonPhase; // 0.0 = New, 0.5 = Full
 
+		// PCG-style 3D integer-like hash (no sin/trig stripes or twin dots)
+		vec3 hash33(vec3 p3) {
+			p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+			p3 += dot(p3, p3.yxz + 33.33);
+			return fract((p3.xxy + p3.yxx) * p3.zyx);
+		}
+
 		float hash(vec2 p) {
 			vec3 p3 = fract(vec3(p.xyx) * 0.1031);
 			p3 += dot(p3, p3.yzx + 33.33);
@@ -126,66 +133,59 @@
 			return normalize(vec3(h - hx, eps, h - hz));
 		}
 
-		vec3 starLayer(vec2 angUV, float scale, float density, float sharpness, float time) {
-			vec2 uv = angUV * scale;
-			vec2 id = floor(uv);
-			vec2 gv = fract(uv) - 0.5;
+		// 3D isotropic starfield: hashes 3D direction vectors directly so there is no 2D projection stripe
+		vec3 starField3D(vec3 dir, float scale, float threshold, float sharpness, float time) {
+			vec3 p = dir * scale;
+			vec3 id = floor(p);
+			vec3 local = fract(p) - 0.5;
 
-			vec3 rnd = hash32(id);
-			if (rnd.z < density) return vec3(0.0);
+			vec3 rnd = hash33(id);
+			if (rnd.z < threshold) return vec3(0.0);
 
-			vec2 pos = (rnd.xy - 0.5) * 0.76;
-			vec2 delta = gv - pos;
-			float d = length(delta);
+			// Jitter star center in 3D cell
+			vec3 starPos = (rnd - 0.5) * 0.78;
+			float d = length(local - starPos);
 
-			float normMag = (rnd.z - density) / (1.0 - density);
-			float mag = pow(normMag, 5.5);
+			float normMag = (rnd.z - threshold) / (1.0 - threshold);
+			float mag = pow(normMag, 5.0);
 
-			float core = exp(-d * sharpness);
-			float halo = exp(-d * (sharpness * 0.28)) * 0.22 * mag;
-			float star = core + halo;
+			float star = smoothstep(0.42, 0.0, d) * exp(-d * sharpness);
+			float halo = exp(-d * (sharpness * 0.25)) * 0.18 * mag;
 
-			if (normMag > 0.94) {
-				float spike = (exp(-abs(delta.x) * sharpness * 1.4) * exp(-abs(delta.y) * 9.0) +
-				               exp(-abs(delta.y) * sharpness * 1.4) * exp(-abs(delta.x) * 9.0)) * 0.35 * mag;
-				star += spike;
-			}
+			float twinkle = 0.72 + 0.28 * sin(time * (1.5 + rnd.x * 5.0) + rnd.y * 62.8);
 
-			float twinkle = 1.0 - (0.38 * (1.0 - mag * 0.5)) * (0.5 + 0.5 * sin(time * (2.0 + rnd.x * 5.0) + rnd.y * 60.0));
+			vec3 col = mix(vec3(1.0, 0.75, 0.55), vec3(0.95, 0.98, 1.0), smoothstep(0.0, 0.6, rnd.x));
+			col = mix(col, vec3(0.65, 0.80, 1.0), smoothstep(0.6, 1.0, rnd.x));
 
-			vec3 col = mix(vec3(1.0, 0.76, 0.58), vec3(0.98, 0.99, 1.0), smoothstep(0.0, 0.55, rnd.x));
-			col = mix(col, vec3(0.68, 0.82, 1.0), smoothstep(0.55, 1.0, rnd.x));
-
-			return col * star * (0.12 + 1.85 * mag) * twinkle;
+			return col * (star + halo) * (0.15 + 1.9 * mag) * twinkle;
 		}
 
-		vec3 shootingStar(vec2 angUV, float time) {
-			float period = 6.5;
+		// 3D shooting star across the celestial sphere
+		vec3 shootingStar3D(vec3 rd, float time) {
+			float period = 6.0;
 			float slot = floor(time / period);
 			float localT = fract(time / period);
 
-			vec3 rnd = hash32(vec2(slot, slot * 2.17));
-			if (rnd.z < 0.58 || localT > 0.14) return vec3(0.0);
+			vec3 rnd = hash33(vec3(slot, slot * 1.618, 7.13));
+			if (rnd.z < 0.52 || localT > 0.15) return vec3(0.0);
 
-			float prog = localT / 0.14;
-			vec2 startPos = vec2((rnd.x - 0.5) * 0.9, 0.18 + rnd.y * 0.32);
-			float angle = -2.45 + (rnd.z - 0.5) * 0.55;
-			vec2 dir = vec2(cos(angle), sin(angle));
+			float prog = localT / 0.15;
+			vec3 startDir = normalize(vec3((rnd.x - 0.5) * 1.4, 0.22 + rnd.y * 0.45, 0.75));
+			vec3 moveDir = normalize(vec3((rnd.y - 0.5) * 0.9, -0.35 - rnd.x * 0.25, 0.15));
 
-			float pathLen = 0.55;
-			float trailLen = 0.18;
-			vec2 head = startPos + dir * (prog * pathLen);
+			vec3 head = normalize(startDir + moveDir * (prog * 0.42));
+			vec3 tangent = normalize(moveDir - head * dot(moveDir, head));
 
-			vec2 toPix = angUV - head;
-			float along = dot(toPix, -dir);
-			float perp = length(toPix - (-dir) * clamp(along, 0.0, trailLen));
+			vec3 diff = rd - head;
+			float along = dot(diff, -tangent);
+			float trailLen = 0.14;
+			float perp = length(diff - (-tangent) * clamp(along, 0.0, trailLen));
 
-			float mask = smoothstep(0.0045, 0.0, perp) *
+			float mask = smoothstep(0.0038, 0.0, perp) *
 			             smoothstep(trailLen, 0.0, along) *
-			             smoothstep(-0.002, 0.005, along);
+			             smoothstep(-0.002, 0.004, along);
 
-			float fade = sin(prog * 3.14159265);
-			return vec3(0.85, 0.94, 1.0) * mask * fade * 2.6;
+			return vec3(0.85, 0.94, 1.0) * mask * sin(prog * 3.14159) * 2.8;
 		}
 
 		float rainStreaks(vec2 uv, float time) {
@@ -202,9 +202,12 @@
 				vec2 scale = vec2(38.0 + fi * 24.0, 2.2 + fi * 0.9);
 				vec2 st = p * scale + vec2(time * (1.8 + fi * 0.8), time * (9.0 + fi * 4.0));
 				vec2 id = floor(st);
+				// Offset vertical phase per column before floor/fract so drops don't march in rows
+				float colOffset = hash(vec2(id.x, fi * 13.7)) * 10.0;
+				st.y += colOffset;
+				id = floor(st);
 				vec2 f = fract(st);
 				vec3 rnd = hash32(id);
-				f.y += rnd.y * 5.0;
 				if (rnd.z > 0.70) {
 					float xOff = 0.2 + rnd.x * 0.6;
 					float drop = smoothstep(0.09, 0.0, abs(f.x - xOff)) *
@@ -484,20 +487,49 @@
 
 				float moonMask = 1.0 - smoothstep(0.92, 0.9985, sunAmt) * moonIllum;
 				float horizonFade = smoothstep(0.01, 0.16, rd.y);
+				float sharp = isReflection ? 18.0 : 34.0;
 
-				float sharpBoost = isReflection ? 18.0 : 34.0;
 				vec3 stars = vec3(0.0);
 
-				stars += starLayer(angUV, 36.0, 0.88, sharpBoost, u_time);
-				stars += starLayer(rot1 * angUV + vec2(17.3, 41.9), 78.0, 0.76, sharpBoost * 1.15, u_time * 0.9) * 0.65;
+				// 3-D Sky - 5 de-correlated 3D octaves at irrational scales
+				float c = cos(u_time * 0.0012), s = sin(u_time * 0.0012);
+				vec3 sDir = vec3(c * rd.x - s * rd.z, rd.y, s * rd.x + c * rd.z);
 
-				float dustDensity = mix(0.74, 0.48, mwBand);
-				stars += starLayer(rot2 * angUV + vec2(83.1, 12.6), 155.0, dustDensity, sharpBoost * 1.3, u_time * 0.7) * 0.35;
+				mat3 m1 = mat3(
+					 0.80, -0.48,  0.36,
+					 0.60,  0.64, -0.48,
+					 0.00,  0.60,  0.80
+				);
+				mat3 m2 = mat3(
+					-0.64,  0.48,  0.60,
+					 0.36,  0.80, -0.48,
+					-0.68, -0.36, -0.64
+				);
 
-				stars += vec3(0.05, 0.08, 0.14) * mwCloud * 0.45;
+				vec3 galDir = m1 * sDir;
+				vec2 galUV = galDir.xz / (abs(galDir.y) + 0.65);
+				float band = exp(-pow((galDir.x + galDir.y * 0.55 - 0.18) * 2.6, 2.0));
+				float cloud = fbm(galUV * 3.2 + fbm(galUV * 6.4) * 0.45);
+				float dustLane = smoothstep(0.38, 0.68, fbm(galUV * 5.5 + vec2(2.1, 8.4)));
+				float milkyWay = band * cloud * (1.0 - 0.55 * dustLane);
+
+				float sharp3D = isReflection ? 10.0 : 18.0;
+				float clusterNoise = fbm(galUV * 4.5 + vec2(11.3, 5.7));
+				float densityMod = clamp(clusterNoise * 0.22 + milkyWay * 0.32, 0.0, 0.42);
+
+				stars += starField3D(sDir, 65.0, 0.93 - densityMod * 0.15, sharp3D, u_time);
+				stars += starField3D(m1 * sDir, 118.0, 0.90 - densityMod * 0.35, sharp3D * 1.1, u_time * 0.9) * 0.80;
+				stars += starField3D(m2 * sDir, 195.0, 0.86 - densityMod * 0.55, sharp3D * 1.2, u_time * 0.8) * 0.55;
+				stars += starField3D(m1 * m2 * sDir, 310.0, 0.82 - densityMod * 0.75, sharp3D * 1.3, u_time * 0.7) * 0.38;
+				stars += starField3D(m2 * m1 * sDir, 460.0, 0.76 - densityMod * 0.95, sharp3D * 1.4, u_time * 0.6) * 0.25;
+
+				// Diffuse Milky Way nebula glow
+				vec3 nebulaCol = mix(vec3(0.04, 0.07, 0.15), vec3(0.11, 0.08, 0.16), cloud);
+				stars += nebulaCol * milkyWay * 0.85;
+				// End of 3-D Sky
 
 				if (!isReflection) {
-					stars += shootingStar(angUV, u_time);
+					stars += shootingStar3D(rd, u_time);
 				}
 
 				sky += stars * nightFactor * horizonFade * moonMask;
@@ -565,7 +597,6 @@
 
 			// Add the lightning bolt on top of the cloud deck so clouds don't hide the trunk
 			sky += boltCol;
-
 
 			if (!isReflection) {
 				sky = evalGulls(rd, u_time, nightFactor, stormFactor, sky);
